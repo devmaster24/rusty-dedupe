@@ -16,6 +16,7 @@ struct FileInfo {
     hash: String,
     file_names: Vec<String>,
     count: i32,
+    file_size: u64,
 }
 
 #[tokio::main]
@@ -53,7 +54,7 @@ async fn main() {
     let mut file_hashes: HashMap<String, FileInfo> = HashMap::new();
 
     for handle in handles {
-        let (file_name, hash) = handle.await.unwrap();
+        let (file_name, file_size, hash) = handle.await.unwrap();
 
         if file_hashes.contains_key(&hash) {
             let mut payload: FileInfo = file_hashes.get(&hash).unwrap().clone();
@@ -67,6 +68,7 @@ async fn main() {
                 hash: hash.clone(),
                 file_names: vec![file_name],
                 count: 1,
+                file_size: file_size,
             };
             file_hashes.insert(hash.clone(), payload);
         }
@@ -74,13 +76,18 @@ async fn main() {
 
     println!("Creating output file {}", OUT_FILE);
     let mut out_file = File::create(OUT_FILE).unwrap();
+    let mut dupe_space = 0;
     for (_, payload) in file_hashes.iter() {
         if payload.count > 1 {
             let output = serde_json::to_string(&payload).unwrap();
             out_file.write(output.as_bytes()).unwrap();
             out_file.write(b"\n").unwrap();
+
+            // Calculate the space saved if all duplicates were removed - excluding the source version
+            dupe_space += payload.file_size * u64::try_from(payload.file_names.len() - 1).unwrap();
         }
     }
 
-    println!("Total size: {total_size}");
+    println!("Total size of dir (bytes): {total_size}");
+    println!("Total size of duplicate files (bytes): {dupe_space}");
 }

@@ -19,14 +19,15 @@ pub fn pull_all_files(dir: &str) -> Vec<PathBuf> {
     paths
 }
 
-pub async fn gen_hash(fp: &PathBuf) -> (String, String) {
+pub async fn gen_hash(fp: &PathBuf) -> (String, u64, String) {
     let file_name = format!("{}", fp.display());
+    let file_size = fp.metadata().unwrap().len();
 
     let mut data = match fs::File::open(&fp) {
         Ok(s) => s,
         Err(_) => {
             println!("Failed to read {}", fp.display());
-            return (file_name, "".to_string());
+            return (file_name, 0, "".to_string());
         }
     };
 
@@ -35,5 +36,5 @@ pub async fn gen_hash(fp: &PathBuf) -> (String, String) {
 
     let hash = format!("{:X}", hasher.finalize());
 
-    (file_name, hash)
+    (file_name, file_size, hash)
 }
