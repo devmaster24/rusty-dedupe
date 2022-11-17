@@ -95,17 +95,21 @@ async fn main() {
         }
 
         let mut idx = 0;
+        while idx < sorted_output.len() {
+            if idx + 1 == sorted_output.len() {
+                sorted_output.push(value);
+                break;
+            }
 
-        while &idx < &file_hashes.len() {
             let curr = sorted_output[idx].dupe_size;
-            let next = sorted_output[idx].dupe_size;
+            let next = sorted_output[idx + 1].dupe_size;
 
-            if &curr == &next {
-                // If they are equal, doesn't matter just plot it in there
+            if curr == next {
+                // If they are equal, doesn't matter just plop it in there
                 sorted_output.insert(idx, value);
                 break;
-            } else if &next > &curr {
-                // Next one is greater, this is the proper place
+            } else if curr > next {
+                // Next one is smaller, this is the proper place
                 sorted_output.insert(idx, value);
                 break;
             }
