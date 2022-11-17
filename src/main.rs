@@ -17,6 +17,7 @@ struct FileInfo {
     file_names: Vec<String>,
     count: i32,
     file_size: u64,
+    dupe_size: u64,
 }
 
 #[tokio::main]
@@ -30,6 +31,10 @@ async fn main() {
             print_help();
             process::exit(1);
         }
+    };
+    let output_file_name = match args.get(2) {
+        Some(s) => s,
+        None => OUT_FILE,
     };
 
     let all_files = pull_all_files(dir_to_scan);
@@ -61,6 +66,7 @@ async fn main() {
 
             payload.file_names.push(file_name);
             payload.count += 1;
+            payload.dupe_size = (payload.count as u64 - 1) * payload.file_size;
 
             file_hashes.insert(hash.clone(), payload);
         } else {
@@ -69,24 +75,66 @@ async fn main() {
                 file_names: vec![file_name],
                 count: 1,
                 file_size: file_size,
+                dupe_size: 0,
             };
             file_hashes.insert(hash.clone(), payload);
         }
     }
 
-    println!("Creating output file {}", OUT_FILE);
-    let mut out_file = File::create(OUT_FILE).unwrap();
-    let mut dupe_space = 0;
-    for (_, payload) in file_hashes.iter() {
-        if payload.count > 1 {
-            let output = serde_json::to_string(&payload).unwrap();
-            out_file.write(output.as_bytes()).unwrap();
-            out_file.write(b"\n").unwrap();
+    // Sort hashmap
+    let mut sorted_output: Vec<&FileInfo> = Vec::new();
+    for (_, value) in file_hashes.iter() {
+        if value.count <= 1 {
+            // There aren't dupes, skip
+            continue;
+        }
 
-            // Calculate the space saved if all duplicates were removed - excluding the source version
-            dupe_space += payload.file_size * u64::try_from(payload.file_names.len() - 1).unwrap();
+        if sorted_output.len() == 0 {
+            sorted_output.push(value);
+            continue;
+        }
+
+        let mut idx = 0;
+
+        while &idx < &file_hashes.len() {
+            let curr = sorted_output[idx].dupe_size;
+            let next = sorted_output[idx].dupe_size;
+
+            if &curr == &next {
+                // If they are equal, doesn't matter just plot it in there
+                sorted_output.insert(idx, value);
+                break;
+            } else if &next > &curr {
+                // Next one is greater, this is the proper place
+                sorted_output.insert(idx, value);
+                break;
+            }
+            // Keep on looking
+            idx += 1;
         }
     }
+
+    println!("Creating output file {}", output_file_name);
+    let mut out_file = File::create(output_file_name).unwrap();
+    out_file.write(b"[").unwrap();
+
+    let mut dupe_space = 0;
+    let mut idx = 1;
+    let max_index = sorted_output.len();
+
+    for x in sorted_output {
+        let output = serde_json::to_string(&x).unwrap();
+        out_file.write(output.as_bytes()).unwrap();
+
+        if idx != max_index {
+            out_file.write(b",\n").unwrap();
+        }
+
+        dupe_space += x.file_size * u64::try_from(x.file_names.len() - 1).unwrap();
+
+        idx += 1;
+    }
+    out_file.write(b"]").unwrap();
 
     println!("Total size of dir (bytes): {total_size}");
     println!("Total size of duplicate files (bytes): {dupe_space}");
