@@ -1,6 +1,6 @@
 use file_dedupe::print_help;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::{collections::HashMap};
 use std::env;
 use std::fs::File;
 use std::io::Write;
@@ -58,9 +58,14 @@ async fn main() {
 
     let mut file_hashes: HashMap<String, FileInfo> = HashMap::new();
 
+    let mut idx = 1.0;
+    let tot_cnt = handles.len() as f64;
     for handle in handles {
-        let (file_name, file_size, hash) = handle.await.unwrap();
+        let prcnt = 100 as f64 * (idx / tot_cnt);
+        print!("\rProcessing {}/{} ({:.2}%)", idx, tot_cnt, prcnt);
+        idx += 1.0;
 
+        let (file_name, file_size, hash) = handle.await.unwrap();
         if file_hashes.contains_key(&hash) {
             let mut payload: FileInfo = file_hashes.get(&hash).unwrap().clone();
 
@@ -80,6 +85,7 @@ async fn main() {
             file_hashes.insert(hash.clone(), payload);
         }
     }
+    println!("\nDone!\n\n");
 
     // Sort hashmap
     let mut sorted_output: Vec<&FileInfo> = Vec::new();
@@ -89,31 +95,26 @@ async fn main() {
             continue;
         }
 
-        if sorted_output.len() == 0 {
+        let out_len = sorted_output.len();
+        if out_len == 0 {
+            // First item - place it in the empty list and move on
             sorted_output.push(value);
             continue;
         }
 
         let mut idx = 0;
-        while idx < sorted_output.len() {
-            if idx + 1 == sorted_output.len() {
+        while idx < out_len {
+            let curr = sorted_output[idx].dupe_size;
+
+            if value.dupe_size >= curr {
+                sorted_output.insert(idx, value);
+                break;
+            } else if idx == out_len - 1 {
                 sorted_output.push(value);
                 break;
             }
 
-            let curr = sorted_output[idx].dupe_size;
-            let next = sorted_output[idx + 1].dupe_size;
-
-            if curr == next {
-                // If they are equal, doesn't matter just plop it in there
-                sorted_output.insert(idx, value);
-                break;
-            } else if curr > next {
-                // Next one is smaller, this is the proper place
-                sorted_output.insert(idx, value);
-                break;
-            }
-            // Keep on looking
+            // Not at the end of the list and not greater than anything just yet
             idx += 1;
         }
     }
@@ -135,7 +136,6 @@ async fn main() {
         }
 
         dupe_space += x.file_size * u64::try_from(x.file_names.len() - 1).unwrap();
-
         idx += 1;
     }
     out_file.write(b"]").unwrap();
