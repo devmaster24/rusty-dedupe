@@ -1,24 +1,12 @@
-use file_dedupe::print_help;
-use serde::Serialize;
-use std::{collections::HashMap};
+use crossbeam_channel::unbounded;
+use std::collections::HashMap;
 use std::env;
-use std::fs::File;
-use std::io::Write;
 use std::process;
-use tokio;
 
-use file_dedupe::fs_helper::{gen_hash, pull_all_files};
+use file_dedupe::fs_helper::{gen_hash, pull_all_files, write_output, FileInfo};
+use file_dedupe::print_help;
 
-const OUT_FILE: &str = "./out.txt";
-
-#[derive(Serialize, Clone)]
-struct FileInfo {
-    hash: String,
-    file_names: Vec<String>,
-    count: i32,
-    file_size: u64,
-    dupe_size: u64,
-}
+const OUT_FILE: &str = "./out.json";
 
 #[tokio::main]
 async fn main() {
@@ -36,64 +24,85 @@ async fn main() {
         Some(s) => s,
         None => OUT_FILE,
     };
+    if dir_to_scan.to_lowercase().contains("help") {
+        print_help();
+        process::exit(0);
+    }
 
     let all_files = pull_all_files(dir_to_scan);
+    let (s, r) = unbounded();
+    let mut handles = Vec::new();
+    let mut total_size: u64 = 0;
     println!("Files found {}", all_files.len());
 
-    let mut handles = Vec::new();
-
-    let mut total_size: u64 = 0;
+    // Loop through all the files and gen hashes async
     for x in all_files {
         total_size += match x.metadata() {
             Ok(x) => x.len(),
             Err(_) => 0,
         };
 
+        let send_channel = s.clone();
         let handle = tokio::spawn(async move {
             let x = gen_hash(&x).await;
+            send_channel.send(1).unwrap();
             x
         });
         handles.push(handle);
     }
 
-    let mut file_hashes: HashMap<String, FileInfo> = HashMap::new();
-
-    let mut idx = 1.0;
+    // Listen to our channel until we have all the messages
+    let mut cnt = 1.0;
     let tot_cnt = handles.len() as f64;
-    for handle in handles {
-        let prcnt = 100 as f64 * (idx / tot_cnt);
-        print!("\rProcessing {}/{} ({:.2}%)", idx, tot_cnt, prcnt);
-        idx += 1.0;
+    while cnt != tot_cnt {
+        let msgs: Vec<i32> = r.try_iter().collect();
+        for msg in msgs {
+            cnt += msg as f64;
+        }
+        let prcnt = 100 as f64 * (cnt / tot_cnt);
+        print!("\rProcessing {}/{} ({:.2}%)", cnt, tot_cnt, prcnt);
+    }
 
+    // Gather the response from our async processes
+    let mut file_hashes: HashMap<String, FileInfo> = HashMap::new();
+    for handle in handles {
         let (file_name, file_size, hash) = handle.await.unwrap();
         if file_hashes.contains_key(&hash) {
-            let mut payload: FileInfo = file_hashes.get(&hash).unwrap().clone();
+            let payload: &mut FileInfo = file_hashes.get_mut(&hash).unwrap();
 
             payload.file_names.push(file_name);
             payload.count += 1;
-            payload.dupe_size = (payload.count as u64 - 1) * payload.file_size;
-
-            file_hashes.insert(hash.clone(), payload);
+            payload.dupe_size += payload.file_size;
         } else {
             let payload = FileInfo {
                 hash: hash.clone(),
                 file_names: vec![file_name],
                 count: 1,
-                file_size: file_size,
+                file_size,
                 dupe_size: 0,
             };
             file_hashes.insert(hash.clone(), payload);
         }
     }
-    println!("\nDone!\n\n");
 
-    // Sort hashmap
-    let mut sorted_output: Vec<&FileInfo> = Vec::new();
-    for (_, value) in file_hashes.iter() {
-        if value.count <= 1 {
+    println!("\nAll hashes generated!\n\n");
+    let sorted_output = sort_files(file_hashes);
+    let dupe_space = write_output(output_file_name, sorted_output);
+
+    println!("Total size of dir (bytes): {total_size}");
+    println!("Total size of duplicate files (bytes): {dupe_space}");
+}
+
+fn sort_files(unsorted: HashMap<String, FileInfo>) -> Vec<FileInfo> {
+    let mut sorted_output: Vec<FileInfo> = Vec::new();
+    for (_, v) in unsorted.iter() {
+        if v.count <= 1 {
             // There aren't dupes, skip
             continue;
         }
+
+        // This is a dupe - obtain ownership
+        let value = v.to_owned();
 
         let out_len = sorted_output.len();
         if out_len == 0 {
@@ -119,27 +128,5 @@ async fn main() {
         }
     }
 
-    println!("Creating output file {}", output_file_name);
-    let mut out_file = File::create(output_file_name).unwrap();
-    out_file.write(b"[").unwrap();
-
-    let mut dupe_space = 0;
-    let mut idx = 1;
-    let max_index = sorted_output.len();
-
-    for x in sorted_output {
-        let output = serde_json::to_string(&x).unwrap();
-        out_file.write(output.as_bytes()).unwrap();
-
-        if idx != max_index {
-            out_file.write(b",\n").unwrap();
-        }
-
-        dupe_space += x.file_size * u64::try_from(x.file_names.len() - 1).unwrap();
-        idx += 1;
-    }
-    out_file.write(b"]").unwrap();
-
-    println!("Total size of dir (bytes): {total_size}");
-    println!("Total size of duplicate files (bytes): {dupe_space}");
+    sorted_output
 }
